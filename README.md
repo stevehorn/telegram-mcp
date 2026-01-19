@@ -54,13 +54,13 @@ TELEGRAM_API_ID=your_api_id_here
 TELEGRAM_API_HASH=your_api_hash_here
 TELEGRAM_PHONE=+1234567890
 TELEGRAM_SESSION=
-TELEGRAM_GROUP_ID=2hmd_IuFtmkwOTFh
+TELEGRAM_GROUP_ID=your_group_id_or_invite_hash
 ```
 
 **Notes:**
 - `TELEGRAM_PHONE`: Your phone number with country code (e.g., +1234567890)
 - `TELEGRAM_SESSION`: Leave empty initially (will be filled by auth script)
-- `TELEGRAM_GROUP_ID`: For the invite link `https://t.me/+2hmd_IuFtmkwOTFh`, use `2hmd_IuFtmkwOTFh`
+- `TELEGRAM_GROUP_ID`: For a private invite link like `https://t.me/+ABC123XYZ`, use `ABC123XYZ`. For public groups like `https://t.me/mygroup`, use `mygroup`
 
 ## Authentication
 
@@ -131,7 +131,7 @@ If you prefer not to use `{env:}` references, you can put the values directly:
         "TELEGRAM_API_HASH": "abcdef1234567890abcdef1234567890",
         "TELEGRAM_PHONE": "+1234567890",
         "TELEGRAM_SESSION": "your_session_string_here",
-        "TELEGRAM_GROUP_ID": "2hmd_IuFtmkwOTFh"
+        "TELEGRAM_GROUP_ID": "your_group_id_or_invite_hash"
       },
       "enabled": true
     }
