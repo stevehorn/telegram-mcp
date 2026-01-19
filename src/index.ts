@@ -62,7 +62,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: 'search_messages',
-        description: 'Search for messages in the Telegram group by keyword or phrase',
+        description: 'Search for messages in the Telegram group by keyword or phrase with advanced filtering and sorting',
         inputSchema: {
           type: 'object',
           properties: {
@@ -79,6 +79,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'number',
               description: 'Number of results to skip for pagination (default: 0)',
               default: 0,
+            },
+            sortBy: {
+              type: 'string',
+              enum: ['relevance', 'date_desc', 'date_asc'],
+              description: 'Sort order: relevance (default), date_desc (newest first), date_asc (oldest first)',
+              default: 'relevance',
+            },
+            startDate: {
+              type: 'string',
+              description: 'Filter messages after this date. Supports: ISO 8601 (2024-01-15T10:30:00Z), Unix timestamp, or natural language (3 days ago, last week)',
+            },
+            endDate: {
+              type: 'string',
+              description: 'Filter messages before this date. Same format as startDate',
+            },
+            dateRange: {
+              type: 'string',
+              enum: ['last24h', 'last7days', 'last30days', 'last90days'],
+              description: 'Convenience date range shortcuts. Overridden by startDate/endDate if provided',
+            },
+            includeExtendedMetadata: {
+              type: 'boolean',
+              description: 'Include extended metadata like reactions, view counts, edit history (default: false)',
+              default: false,
             },
           },
           required: ['query'],
@@ -107,6 +131,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       if (params.offset !== undefined && (typeof params.offset !== 'number' || params.offset < 0)) {
         throw new Error('Offset must be a non-negative number');
+      }
+
+      // Validate sortBy
+      if (params.sortBy !== undefined && !['relevance', 'date_desc', 'date_asc'].includes(params.sortBy)) {
+        throw new Error('sortBy must be one of: relevance, date_desc, date_asc');
+      }
+
+      // Validate dateRange
+      if (params.dateRange !== undefined && !['last24h', 'last7days', 'last30days', 'last90days'].includes(params.dateRange)) {
+        throw new Error('dateRange must be one of: last24h, last7days, last30days, last90days');
+      }
+
+      // Validate includeExtendedMetadata
+      if (params.includeExtendedMetadata !== undefined && typeof params.includeExtendedMetadata !== 'boolean') {
+        throw new Error('includeExtendedMetadata must be a boolean');
       }
 
       const config = getConfig();
