@@ -3,27 +3,46 @@
  */
 
 import { Api } from 'telegram/tl/index.js';
-import { getClient, resolveGroup, getEntityInfo } from '../telegram.js';
+import { getClient, resolveGroup, getEntityInfo, getAllUserGroups } from '../telegram.js';
 import type { SearchResult, SearchParams, MessageResult, TelegramConfig } from '../types.js';
 import { parseDateInput, parseDateShortcut, validateDateRange } from '../utils/dateParser.js';
 import { calculateRelevance } from '../utils/relevanceScorer.js';
 import { extractMediaInfo } from '../utils/mediaParser.js';
+import { TelegramRateLimiter, TelegramCircuitBreaker } from '../utils/rateLimiter.js';
+import { ResultAggregator, GroupSearchResult } from '../utils/resultAggregator.js';
+import { logOperationError, logger } from '../utils/logger.js';
 
 /**
- * Search for messages in a Telegram group
+ * Helper function to determine group type
  */
-export async function searchMessages(
-  config: TelegramConfig,
-  params: SearchParams
-): Promise<SearchResult> {
-  const { query, limit = 10, offset = 0 } = params;
+function determineGroupType(group: any): string {
+  if (group.className === 'Chat') return 'basicgroup';
+  if (group.className === 'Channel') {
+    if (group.broadcast) return 'channel';
+    if (group.gigagroup) return 'gigagroup';
+    return 'supergroup';
+  }
+  return 'unknown';
+}
+
+/**
+ * Search for messages in a single Telegram group
+ */
+async function searchSingleGroup(
+  client: any,
+  groupId: string,
+  params: SearchParams,
+  rateLimiter: TelegramRateLimiter,
+  circuitBreaker: TelegramCircuitBreaker
+): Promise<GroupSearchResult> {
+  const startTime = Date.now();
 
   try {
-    const client = getClient();
-    
-    // Resolve the group entity
-    const group = await resolveGroup(client, config.groupId);
-    
+    // Resolve the group entity with rate limiting
+    const group = await rateLimiter.execute(groupId, async () => {
+      return await resolveGroup(client, groupId);
+    });
+
     // Process date filtering
     let minDate = 0;
     let maxDate = 0;
@@ -41,24 +60,28 @@ export async function searchMessages(
       } catch (error: any) {
         return {
           success: false,
+          groupId,
           results: [],
           totalFound: 0,
           hasMore: false,
           error: `Invalid startDate: ${error.message}`,
+          executionTime: Date.now() - startTime
         };
       }
     }
-    
+
     if (params.endDate) {
       try {
         maxDate = parseDateInput(params.endDate);
       } catch (error: any) {
         return {
           success: false,
+          groupId,
           results: [],
           totalFound: 0,
           hasMore: false,
           error: `Invalid endDate: ${error.message}`,
+          executionTime: Date.now() - startTime
         };
       }
     }
@@ -67,42 +90,50 @@ export async function searchMessages(
     if (minDate && maxDate && !validateDateRange(minDate, maxDate)) {
       return {
         success: false,
+        groupId,
         results: [],
         totalFound: 0,
         hasMore: false,
         error: 'Invalid date range: startDate must be before endDate',
+        executionTime: Date.now() - startTime
       };
     }
-    
-    // Search for messages
-    const result = await client.invoke(
-      new Api.messages.Search({
-        peer: group,
-        q: query,
-        filter: new Api.InputMessagesFilterEmpty(),
-        minDate,
-        maxDate,
-        offsetId: 0,
-        addOffset: offset,
-        limit: Math.min(limit, 100), // Telegram max is 100
-        maxId: 0,
-        minId: 0,
-        hash: 0 as any,
-      })
-    );
 
-    if (!('messages' in result)) {
+    // Search for messages with circuit breaker protection
+    const searchResult = await circuitBreaker.execute(async () => {
+      return await rateLimiter.execute(groupId, async () => {
+        return await client.invoke(
+          new Api.messages.Search({
+            peer: group,
+            q: params.query,
+            filter: new Api.InputMessagesFilterEmpty(),
+            minDate,
+            maxDate,
+            offsetId: 0,
+            addOffset: params.offset || 0,
+            limit: Math.min(params.limit || 10, 100), // Telegram max is 100
+            maxId: 0,
+            minId: 0,
+            hash: 0 as any,
+          })
+        );
+      });
+    });
+
+    if (!('messages' in searchResult)) {
       return {
         success: false,
+        groupId,
         results: [],
         totalFound: 0,
         hasMore: false,
         error: 'No messages found',
+        executionTime: Date.now() - startTime
       };
     }
 
-    const messages = result.messages;
-    const totalCount = 'count' in result ? result.count : messages.length;
+    const messages = searchResult.messages;
+    const totalCount = 'count' in searchResult ? searchResult.count : messages.length;
 
     // Format the results
     const formattedResults: MessageResult[] = [];
@@ -113,11 +144,11 @@ export async function searchMessages(
       }
 
       const message = msg as Api.Message;
-      
-      // Get sender info
+
+      // Get sender info with caching
       let senderName = 'Unknown';
       let senderUsername: string | undefined;
-      
+
       if (message.fromId) {
         if ('userId' in message.fromId) {
           const userId = Number(message.fromId.userId);
@@ -152,7 +183,7 @@ export async function searchMessages(
       let replyTo;
       if (message.replyTo && 'replyToMsgId' in message.replyTo) {
         const replyMsgId = Number(message.replyTo.replyToMsgId);
-        
+
         // Fetch the replied message for context
         try {
           const repliedMsgs = await client.getMessages(group, { ids: [replyMsgId] });
@@ -160,7 +191,7 @@ export async function searchMessages(
             const replyMessage = repliedMsgs[0] as Api.Message;
             let replyToSenderId: number | undefined;
             let replyToSenderName = 'Unknown';
-            
+
             if (replyMessage.fromId) {
               if ('userId' in replyMessage.fromId) {
                 replyToSenderId = Number(replyMessage.fromId.userId);
@@ -168,7 +199,7 @@ export async function searchMessages(
                 replyToSenderName = senderInfo.name;
               }
             }
-            
+
             replyTo = {
               replyToMessageId: replyMsgId,
               replyToSenderId,
@@ -190,7 +221,7 @@ export async function searchMessages(
         const fwd = message.fwdFrom;
         let fromChatName: string | undefined;
         let fromChatId: number | undefined;
-        
+
         if (fwd.fromId) {
           if ('channelId' in fwd.fromId) {
             fromChatId = Number(fwd.fromId.channelId);
@@ -210,7 +241,7 @@ export async function searchMessages(
             }
           }
         }
-        
+
         forwardedFrom = {
           fromChatId,
           fromChatName,
@@ -223,7 +254,7 @@ export async function searchMessages(
       let extended;
       if (params.includeExtendedMetadata) {
         extended = {} as any;
-        
+
         // Reactions
         if (message.reactions && message.reactions.results) {
           extended.reactions = message.reactions.results.map((r: any) => ({
@@ -231,17 +262,17 @@ export async function searchMessages(
             count: r.count,
           }));
         }
-        
+
         // View count (for channel messages)
         if (message.views) {
           extended.viewCount = message.views;
         }
-        
+
         // Edit date
         if (message.editDate) {
           extended.editDate = new Date(message.editDate * 1000).toISOString();
         }
-        
+
         // Pinned status
         if (message.pinned) {
           extended.isPinned = true;
@@ -249,7 +280,7 @@ export async function searchMessages(
       }
 
       // Calculate relevance score
-      const relevanceScore = calculateRelevance(message.message || '', query);
+      const relevanceScore = calculateRelevance(message.message || '', params.query);
 
       formattedResults.push({
         messageId: message.id,
@@ -259,6 +290,9 @@ export async function searchMessages(
         text: message.message || '',
         date,
         link,
+        groupId: groupId,
+        groupTitle: group.title || 'Unknown Group',
+        groupType: determineGroupType(group),
         relevanceScore,
         media,
         replyTo,
@@ -267,25 +301,176 @@ export async function searchMessages(
       });
     }
 
-    // Sort results based on sortBy parameter
-    const sortBy = params.sortBy || 'relevance';
-    if (sortBy === 'relevance') {
-      formattedResults.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
-    } else if (sortBy === 'date_desc') {
-      formattedResults.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    } else if (sortBy === 'date_asc') {
-      formattedResults.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-    }
-
     return {
       success: true,
+      groupId,
       results: formattedResults,
       totalFound: totalCount,
-      hasMore: totalCount > offset + formattedResults.length,
-      sortedBy: sortBy,
+      hasMore: totalCount > (params.offset || 0) + formattedResults.length,
+      executionTime: Date.now() - startTime
     };
   } catch (error: any) {
-    console.error('Search error:', error);
+    // Log the error
+    logOperationError('search_single_group', error, {
+      groupId,
+      query: params.query,
+      executionTime: Date.now() - startTime
+    });
+
+    return {
+      success: false,
+      groupId,
+      results: [],
+      totalFound: 0,
+      hasMore: false,
+      error: error.message || 'Unknown error occurred',
+      executionTime: Date.now() - startTime
+    };
+  }
+}
+
+/**
+ * Search for messages in multiple Telegram groups
+ */
+export async function searchMessages(
+  config: TelegramConfig,
+  params: SearchParams
+): Promise<SearchResult> {
+  const startTime = Date.now();
+
+  try {
+    const client = getClient();
+
+    // Determine which groups to search
+    let groupIds: string[];
+    
+    if (params.groupIds && params.groupIds.length > 0) {
+      // Use specific groups provided in params
+      groupIds = params.groupIds;
+      logger.info('Using specific groups from parameters', {
+        groupCount: groupIds.length,
+        groups: groupIds,
+        query: params.query
+      });
+    } else {
+      // Auto-discover groups
+      logger.info('Starting auto-discovery of user groups', {
+        maxGroups: params.maxGroups || 50,
+        includeChannels: params.includeChannels !== false,
+        includeArchivedChats: params.includeArchivedChats || false,
+        groupTypes: params.groupTypes,
+        query: params.query
+      });
+
+      const discoveredGroups = await getAllUserGroups(client, {
+        maxGroups: params.maxGroups || 50,
+        includeChannels: params.includeChannels !== false,
+        includeArchivedChats: params.includeArchivedChats || false,
+        groupTypes: params.groupTypes
+      });
+
+      groupIds = discoveredGroups.map(g => g.id);
+
+      logger.info('Auto-discovery completed', {
+        groupCount: groupIds.length,
+        groups: discoveredGroups.map(g => ({ id: g.id, title: g.title, type: g.type })),
+        query: params.query
+      });
+
+      // Handle case where no groups were discovered
+      if (groupIds.length === 0) {
+        return {
+          success: false,
+          results: [],
+          totalFound: 0,
+          hasMore: false,
+          error: 'No groups found. The user is not a member of any groups.',
+        };
+      }
+    }
+
+    // Set up rate limiting and circuit breaker
+    const rateLimiter = new TelegramRateLimiter(params.concurrencyLimit || 3);
+    const circuitBreaker = new TelegramCircuitBreaker();
+
+    // Add rate limit delays between requests
+    const delayMs = params.rateLimitDelay || 1000;
+
+    // Search all groups in parallel with Promise.allSettled for fault tolerance
+    const searchPromises = groupIds.map((groupId: string, index: number) =>
+      // Add staggered start to avoid immediate rate limiting
+      new Promise<GroupSearchResult>((resolve) => {
+        setTimeout(async () => {
+          const result = await searchSingleGroup(client, groupId, params, rateLimiter, circuitBreaker);
+          resolve(result);
+        }, index * delayMs);
+      })
+    );
+
+    const settledResults = await Promise.allSettled(searchPromises);
+
+    // Separate successful and failed results
+    const successfulResults: GroupSearchResult[] = [];
+    const failedGroups: Array<{ groupId: string; error: any }> = [];
+
+    settledResults.forEach((result: any, index: number) => {
+      if (result.status === 'fulfilled') {
+        const groupResult = result.value;
+        if (groupResult.success) {
+          successfulResults.push(groupResult);
+        } else {
+          failedGroups.push({
+            groupId: groupResult.groupId,
+            error: groupResult.error || 'Search failed'
+          });
+        }
+      } else {
+        failedGroups.push({
+          groupId: groupIds[index],
+          error: result.reason
+        });
+      }
+    });
+
+    // Log failed groups
+    failedGroups.forEach(failure => {
+      logOperationError('multi_group_search', new Error(failure.error), {
+        groupId: failure.groupId,
+        query: params.query,
+        totalExecutionTime: Date.now() - startTime
+      });
+    });
+
+    // If no groups succeeded, return error
+    if (successfulResults.length === 0) {
+      return {
+        success: false,
+        results: [],
+        totalFound: 0,
+        hasMore: false,
+        error: `All ${groupIds.length} group searches failed. Check search_errors.log for details.`,
+      };
+    }
+
+    // If some groups failed, return partial results
+    if (failedGroups.length > 0) {
+      return ResultAggregator.createPartialResult(successfulResults, failedGroups, params);
+    }
+
+    // All groups succeeded - return combined results
+    return ResultAggregator.combineGroupResults(
+      successfulResults,
+      params.limit || 10,
+      params.sortBy || 'relevance'
+    );
+
+  } catch (error: any) {
+    logOperationError('search_messages', error, {
+      query: params.query,
+      groupIds: params.groupIds,
+      executionTime: Date.now() - startTime
+    });
+
     return {
       success: false,
       results: [],

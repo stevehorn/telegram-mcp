@@ -7,7 +7,6 @@ export interface TelegramConfig {
   apiHash: string;
   phone: string;
   session: string;
-  groupId: string;
 }
 
 export type SortOrder = 'relevance' | 'date_desc' | 'date_asc';
@@ -50,6 +49,8 @@ export interface SearchResult {
   hasMore: boolean;
   error?: string;
   sortedBy?: SortOrder;
+  partial?: boolean;  // Indicates partial results due to some group failures
+  failedGroups?: Array<{ groupId: string; error: string }>;  // Failed groups when partial=true
 }
 
 export interface MessageResult {
@@ -60,6 +61,9 @@ export interface MessageResult {
   text: string;
   date: string;
   link?: string;
+  groupId: string;  // Group identifier (numeric ID or username)
+  groupTitle: string;  // Human-readable group name
+  groupType?: string;  // Type: 'channel', 'supergroup', 'gigagroup', 'basicgroup'
   relevanceScore?: number;
   media?: MediaInfo;
   replyTo?: ReplyInfo;
@@ -76,4 +80,11 @@ export interface SearchParams {
   endDate?: string;
   dateRange?: DateShortcut;
   includeExtendedMetadata?: boolean;
+  groupIds?: string[];  // Optional: Array of specific group IDs to search (overrides auto-discovery)
+  maxGroups?: number;  // Max groups to auto-discover (default: 50, max: 200)
+  includeChannels?: boolean;  // Include channels in auto-discovery (default: true)
+  includeArchivedChats?: boolean;  // Include archived chats (default: false)
+  groupTypes?: string[];  // Filter by group types: 'channel', 'supergroup', 'gigagroup', 'basicgroup' (default: all)
+  concurrencyLimit?: number;  // Max parallel searches (1-10, default 3)
+  rateLimitDelay?: number;  // Delay between requests in ms (default 1000)
 }

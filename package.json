@@ -27,10 +27,16 @@
     "chrono-node": "^2.9.0",
     "dotenv": "^16.4.7",
     "input": "^1.0.1",
-    "telegram": "^2.25.16"
+    "limiter": "^3.0.0",
+    "opossum": "^9.0.0",
+    "p-limit": "^7.2.0",
+    "serialize-error": "^13.0.1",
+    "telegram": "^2.25.16",
+    "winston": "^3.19.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "@types/opossum": "^8.1.9",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }

@@ -25,12 +25,11 @@ function getConfig(): TelegramConfig {
   const apiHash = process.env.TELEGRAM_API_HASH;
   const phone = process.env.TELEGRAM_PHONE;
   const session = process.env.TELEGRAM_SESSION || '';
-  const groupId = process.env.TELEGRAM_GROUP_ID;
 
-  if (!apiId || !apiHash || !phone || !groupId) {
+  if (!apiId || !apiHash || !phone) {
     throw new Error(
       'Missing required environment variables. Please check your .env file.\n' +
-      'Required: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE, TELEGRAM_GROUP_ID'
+      'Required: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE'
     );
   }
 
@@ -39,7 +38,6 @@ function getConfig(): TelegramConfig {
     apiHash,
     phone,
     session,
-    groupId,
   };
 }
 
@@ -62,7 +60,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: 'search_messages',
-        description: 'Search for messages in the Telegram group by keyword or phrase with advanced filtering and sorting',
+        description: 'Search Telegram groups and channels the authenticated user belongs to. Automatically discovers and searches across all user groups (up to 50 by default). Find discussions about any topic with advanced filtering and sorting capabilities. Each result includes group context (name, ID, type) for easy identification.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -99,11 +97,55 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               enum: ['last24h', 'last7days', 'last30days', 'last90days'],
               description: 'Convenience date range shortcuts. Overridden by startDate/endDate if provided',
             },
-            includeExtendedMetadata: {
-              type: 'boolean',
-              description: 'Include extended metadata like reactions, view counts, edit history (default: false)',
-              default: false,
-            },
+             includeExtendedMetadata: {
+               type: 'boolean',
+               description: 'Include extended metadata like reactions, view counts, edit history (default: false)',
+               default: false,
+             },
+             groupIds: {
+               type: 'array',
+               items: { type: 'string' },
+               description: 'Optional: Array of specific group IDs to search. If provided, skips auto-discovery and searches only these groups. Format: numeric IDs (e.g., "-1001234567890") or usernames (e.g., "my_channel")',
+             },
+             maxGroups: {
+               type: 'number',
+               description: 'Maximum number of groups to auto-discover and search (default: 50, max: 200). Only used if groupIds is not provided',
+               minimum: 1,
+               maximum: 200,
+               default: 50,
+             },
+             includeChannels: {
+               type: 'boolean',
+               description: 'Include channels in auto-discovery (default: true)',
+               default: true,
+             },
+             includeArchivedChats: {
+               type: 'boolean',
+               description: 'Include archived chats in auto-discovery (default: false)',
+               default: false,
+             },
+             groupTypes: {
+               type: 'array',
+               items: { 
+                 type: 'string',
+                 enum: ['channel', 'supergroup', 'gigagroup', 'basicgroup']
+               },
+               description: 'Filter by group types during auto-discovery (default: all types). Options: "channel", "supergroup", "gigagroup", "basicgroup"',
+             },
+             concurrencyLimit: {
+               type: 'number',
+               description: 'Maximum number of parallel group searches (1-10, default: 3)',
+               minimum: 1,
+               maximum: 10,
+               default: 3,
+             },
+             rateLimitDelay: {
+               type: 'number',
+               description: 'Delay between API requests in milliseconds (0-5000, default: 1000)',
+               minimum: 0,
+               maximum: 5000,
+               default: 1000,
+             },
           },
           required: ['query'],
         },
@@ -143,12 +185,58 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error('dateRange must be one of: last24h, last7days, last30days, last90days');
       }
 
-      // Validate includeExtendedMetadata
-      if (params.includeExtendedMetadata !== undefined && typeof params.includeExtendedMetadata !== 'boolean') {
-        throw new Error('includeExtendedMetadata must be a boolean');
-      }
+       // Validate includeExtendedMetadata
+       if (params.includeExtendedMetadata !== undefined && typeof params.includeExtendedMetadata !== 'boolean') {
+         throw new Error('includeExtendedMetadata must be a boolean');
+       }
 
-      const config = getConfig();
+       // Validate groupIds
+       if (params.groupIds !== undefined) {
+         if (!Array.isArray(params.groupIds)) {
+           throw new Error('groupIds must be an array of strings');
+         }
+         if (params.groupIds.some(id => typeof id !== 'string' || !id.trim())) {
+           throw new Error('All groupIds must be non-empty strings');
+         }
+       }
+
+       // Validate maxGroups
+       if (params.maxGroups !== undefined && (typeof params.maxGroups !== 'number' || params.maxGroups < 1 || params.maxGroups > 200)) {
+         throw new Error('maxGroups must be a number between 1 and 200');
+       }
+
+       // Validate includeChannels
+       if (params.includeChannels !== undefined && typeof params.includeChannels !== 'boolean') {
+         throw new Error('includeChannels must be a boolean');
+       }
+
+       // Validate includeArchivedChats
+       if (params.includeArchivedChats !== undefined && typeof params.includeArchivedChats !== 'boolean') {
+         throw new Error('includeArchivedChats must be a boolean');
+       }
+
+       // Validate groupTypes
+       if (params.groupTypes !== undefined) {
+         if (!Array.isArray(params.groupTypes)) {
+           throw new Error('groupTypes must be an array of strings');
+         }
+         const validTypes = ['channel', 'supergroup', 'gigagroup', 'basicgroup'];
+         if (params.groupTypes.some(type => !validTypes.includes(type))) {
+           throw new Error('groupTypes must only contain: channel, supergroup, gigagroup, basicgroup');
+         }
+       }
+
+       // Validate concurrencyLimit
+       if (params.concurrencyLimit !== undefined && (typeof params.concurrencyLimit !== 'number' || params.concurrencyLimit < 1 || params.concurrencyLimit > 10)) {
+         throw new Error('concurrencyLimit must be a number between 1 and 10');
+       }
+
+       // Validate rateLimitDelay
+       if (params.rateLimitDelay !== undefined && (typeof params.rateLimitDelay !== 'number' || params.rateLimitDelay < 0 || params.rateLimitDelay > 5000)) {
+         throw new Error('rateLimitDelay must be a number between 0 and 5000');
+       }
+
+       const config = getConfig();
       const result = await searchMessages(config, params);
 
       return {

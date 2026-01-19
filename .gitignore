@@ -16,6 +16,7 @@ telegram-session.json
 *.log
 npm-debug.log*
 logs/
+search_errors.log
 
 # OS files
 .DS_Store
