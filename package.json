@@ -1,0 +1,36 @@
+{
+  "name": "telegram-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for searching Telegram group messages",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "telegram-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "auth": "tsx scripts/authenticate.ts"
+  },
+  "keywords": [
+    "mcp",
+    "telegram",
+    "search",
+    "model-context-protocol"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "telegram": "^2.25.16",
+    "dotenv": "^16.4.7",
+    "input": "^1.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3",
+    "tsx": "^4.19.2"
+  }
+}
