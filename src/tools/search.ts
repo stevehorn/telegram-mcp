@@ -3,7 +3,7 @@
  */
 
 import { Api } from 'telegram/tl/index.js';
-import { getClient, resolveGroup, getEntityInfo, getAllUserGroups } from '../telegram.js';
+import { getClient, resolveGroup, getAllUserGroups } from '../telegram.js';
 import type { SearchResult, SearchParams, MessageResult, TelegramConfig } from '../types.js';
 import { parseDateInput, parseDateShortcut, validateDateRange } from '../utils/dateParser.js';
 import { calculateRelevance } from '../utils/relevanceScorer.js';
@@ -135,6 +135,28 @@ async function searchSingleGroup(
     const messages = searchResult.messages;
     const totalCount = 'count' in searchResult ? searchResult.count : messages.length;
 
+    // Extract users from search result to avoid redundant API calls
+    const users = searchResult.users || [];
+    const userMap = new Map<string, { name: string; username?: string }>();
+
+    for (const user of users) {
+      if ('id' in user) {
+        const userId = String(user.id);
+        let name = 'Unknown User';
+        
+        if ('firstName' in user) {
+          const firstName = user.firstName || '';
+          const lastName = user.lastName || '';
+          name = `${firstName} ${lastName}`.trim() || 'Unknown User';
+        } else if ('title' in user) {
+          name = user.title || 'Unknown';
+        }
+        
+        const username = ('username' in user) ? user.username : undefined;
+        userMap.set(userId, { name, username });
+      }
+    }
+
     // Format the results
     const formattedResults: MessageResult[] = [];
 
@@ -145,21 +167,22 @@ async function searchSingleGroup(
 
       const message = msg as Api.Message;
 
-      // Get sender info with caching
+      // Get sender info from pre-fetched user map
+      let senderId = 0;
       let senderName = 'Unknown';
       let senderUsername: string | undefined;
 
       if (message.fromId) {
         if ('userId' in message.fromId) {
-          const userId = Number(message.fromId.userId);
-          const senderInfo = await getEntityInfo(client, userId);
-          senderName = senderInfo.name;
-          senderUsername = senderInfo.username;
+          senderId = Number(message.fromId.userId);
+          const userInfo = userMap.get(String(senderId));
+          senderName = userInfo?.name || `User ${senderId}`;
+          senderUsername = userInfo?.username;
         } else if ('channelId' in message.fromId) {
-          const channelId = Number(message.fromId.channelId);
-          const senderInfo = await getEntityInfo(client, channelId);
-          senderName = senderInfo.name;
-          senderUsername = senderInfo.username;
+          senderId = Number(message.fromId.channelId);
+          const userInfo = userMap.get(String(senderId));
+          senderName = userInfo?.name || `Channel ${senderId}`;
+          senderUsername = userInfo?.username;
         }
       }
 
@@ -179,40 +202,12 @@ async function searchSingleGroup(
       // Extract media info
       const media = extractMediaInfo(message);
 
-      // Extract reply information
+      // Extract reply information (ID only, no fetching)
       let replyTo;
       if (message.replyTo && 'replyToMsgId' in message.replyTo) {
-        const replyMsgId = Number(message.replyTo.replyToMsgId);
-
-        // Fetch the replied message for context
-        try {
-          const repliedMsgs = await client.getMessages(group, { ids: [replyMsgId] });
-          if (repliedMsgs && repliedMsgs.length > 0 && repliedMsgs[0] && 'message' in repliedMsgs[0]) {
-            const replyMessage = repliedMsgs[0] as Api.Message;
-            let replyToSenderId: number | undefined;
-            let replyToSenderName = 'Unknown';
-
-            if (replyMessage.fromId) {
-              if ('userId' in replyMessage.fromId) {
-                replyToSenderId = Number(replyMessage.fromId.userId);
-                const senderInfo = await getEntityInfo(client, replyToSenderId);
-                replyToSenderName = senderInfo.name;
-              }
-            }
-
-            replyTo = {
-              replyToMessageId: replyMsgId,
-              replyToSenderId,
-              replyToSenderName,
-              replyToText: replyMessage.message?.substring(0, 100),
-            };
-          }
-        } catch (error) {
-          // If we can't fetch reply context, just include the ID
-          replyTo = {
-            replyToMessageId: replyMsgId,
-          };
-        }
+        replyTo = {
+          replyToMessageId: Number(message.replyTo.replyToMsgId),
+        };
       }
 
       // Extract forward information
@@ -225,20 +220,12 @@ async function searchSingleGroup(
         if (fwd.fromId) {
           if ('channelId' in fwd.fromId) {
             fromChatId = Number(fwd.fromId.channelId);
-            try {
-              const chatInfo = await getEntityInfo(client, fromChatId);
-              fromChatName = chatInfo.name;
-            } catch (error) {
-              // Ignore if we can't get chat info
-            }
+            const userInfo = userMap.get(String(fromChatId));
+            fromChatName = userInfo?.name || `Channel ${fromChatId}`;
           } else if ('userId' in fwd.fromId) {
             fromChatId = Number(fwd.fromId.userId);
-            try {
-              const userInfo = await getEntityInfo(client, fromChatId);
-              fromChatName = userInfo.name;
-            } catch (error) {
-              // Ignore if we can't get user info
-            }
+            const userInfo = userMap.get(String(fromChatId));
+            fromChatName = userInfo?.name || `User ${fromChatId}`;
           }
         }
 

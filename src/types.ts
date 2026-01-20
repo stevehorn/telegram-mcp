@@ -23,9 +23,8 @@ export interface MediaInfo {
 
 export interface ReplyInfo {
   replyToMessageId: number;
-  replyToSenderId?: number;
-  replyToSenderName?: string;
-  replyToText?: string;
+  // Note: Sender details and text removed to avoid extra API calls
+  // Use a separate query to fetch reply message details if needed
 }
 
 export interface ForwardInfo {

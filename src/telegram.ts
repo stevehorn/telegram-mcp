@@ -80,34 +80,6 @@ export async function resolveGroup(client: TelegramClient, groupId: string): Pro
 }
 
 /**
- * Get entity info for formatting
- */
-export async function getEntityInfo(client: TelegramClient, entityId: number): Promise<{ name: string; username?: string }> {
-  try {
-    const entity = await client.getEntity(entityId);
-    
-    if ('firstName' in entity) {
-      const firstName = entity.firstName || '';
-      const lastName = entity.lastName || '';
-      const username = 'username' in entity ? entity.username || undefined : undefined;
-      return {
-        name: `${firstName} ${lastName}`.trim() || 'Unknown User',
-        username,
-      };
-    } else if ('title' in entity) {
-      return {
-        name: entity.title || 'Unknown',
-        username: 'username' in entity ? entity.username || undefined : undefined,
-      };
-    }
-    
-    return { name: 'Unknown' };
-  } catch (error) {
-    return { name: 'Unknown User' };
-  }
-}
-
-/**
  * Get all groups/channels the user belongs to
  */
 export async function getAllUserGroups(
